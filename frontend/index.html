@@ -1,0 +1,97 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Option-Implied Probability Dashboard</title>
+<script src="https://cdn.plot.ly/plotly-2.35.2.min.js" charset="utf-8"></script>
+<link rel="stylesheet" href="/static/style.css" />
+</head>
+<body>
+<header>
+  <div class="brand">
+    <div class="mark"></div>
+    <div>
+      <h1>Option-Implied Probability</h1>
+      <p class="sub">Risk-neutral event probabilities from the listed options market · SABR → Breeden–Litzenberger</p>
+    </div>
+  </div>
+  <div id="source-badge" class="badge">…</div>
+</header>
+
+<main>
+  <section class="controls card">
+    <div class="row">
+      <label>
+        Underlying
+        <input id="underlying" list="preset-list" placeholder="e.g. SPX Index, FEDFUNDS, EURUSD Curncy" value="SPX Index" />
+        <datalist id="preset-list"></datalist>
+      </label>
+      <label>
+        Condition
+        <input id="condition" placeholder="e.g. above 6000 by December" value="above 6000 by December" />
+      </label>
+    </div>
+
+    <div class="row advanced">
+      <label>Expiry
+        <select id="expiry"><option value="">Nearest to target date</option></select>
+      </label>
+      <label>SABR β (blank = default)
+        <input id="beta" type="number" step="0.05" min="0" max="1" placeholder="auto" />
+      </label>
+      <label>Discount r
+        <input id="rate" type="number" step="0.005" value="0" />
+      </label>
+      <label class="chk">
+        <input id="force_pct" type="checkbox" /> Threshold is a % (rates)
+      </label>
+      <button id="run">Compute probability</button>
+    </div>
+    <div id="hint" class="hint"></div>
+  </section>
+
+  <section id="result" class="hidden">
+    <div class="headline card">
+      <div class="prob-block">
+        <div class="prob-label">Probability of event</div>
+        <div id="prob" class="prob-value">—</div>
+        <div id="prob-cond" class="prob-cond"></div>
+        <div id="odds" class="odds"></div>
+      </div>
+      <div class="meta-grid">
+        <div><span>Underlying</span><b id="m-und">—</b></div>
+        <div><span>Asset class</span><b id="m-ac">—</b></div>
+        <div><span>Expiry</span><b id="m-exp">—</b></div>
+        <div><span>T (yrs)</span><b id="m-t">—</b></div>
+        <div><span>Forward</span><b id="m-fwd">—</b></div>
+        <div><span>Data source</span><b id="m-src">—</b></div>
+      </div>
+    </div>
+
+    <div class="grid2">
+      <div class="card"><div id="chart-dist"></div></div>
+      <div class="card"><div id="chart-cdf"></div></div>
+    </div>
+    <div class="grid2">
+      <div class="card"><div id="chart-smile"></div></div>
+      <div class="card">
+        <h3>Distribution statistics</h3>
+        <table id="stats-table" class="stats"></table>
+        <h3 style="margin-top:16px">SABR fit</h3>
+        <table id="sabr-table" class="stats"></table>
+      </div>
+    </div>
+  </section>
+
+  <section id="error" class="hidden card err"></section>
+</main>
+
+<footer>
+  <p>Risk-neutral (option-implied) probabilities reflect market pricing including risk premia, not physical forecasts.
+     Density extracted via Breeden–Litzenberger on a SABR-fitted smile. For internal research use.</p>
+</footer>
+
+<script src="/static/app.js"></script>
+</body>
+</html>

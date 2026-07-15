@@ -1,0 +1,64 @@
+:root{
+  --bg:#0b1020; --panel:#121a30; --panel2:#0f1729; --line:#22304f;
+  --text:#e8edf7; --muted:#9fb0cc; --accent:#4da3ff; --accent2:#38d39f;
+  --warn:#ffb020; --neg:#ff6b6b; --radius:14px;
+  --serif:"Iowan Old Style",Georgia,"Times New Roman",serif;
+  --sans:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+}
+*{box-sizing:border-box}
+body{margin:0;background:linear-gradient(180deg,#0a0f1e,#0b1020 40%);color:var(--text);
+  font-family:var(--sans);font-size:15px;line-height:1.45}
+header{display:flex;justify-content:space-between;align-items:center;
+  padding:20px 32px;border-bottom:1px solid var(--line);background:rgba(10,15,30,.7);
+  position:sticky;top:0;backdrop-filter:blur(8px);z-index:10}
+.brand{display:flex;gap:16px;align-items:center}
+.mark{width:38px;height:38px;border-radius:9px;
+  background:conic-gradient(from 210deg,var(--accent),var(--accent2),var(--accent));
+  box-shadow:0 0 22px rgba(77,163,255,.4)}
+h1{font-family:var(--serif);font-size:22px;margin:0;letter-spacing:.2px}
+.sub{margin:2px 0 0;color:var(--muted);font-size:12.5px}
+.badge{font-size:12px;padding:6px 12px;border-radius:999px;border:1px solid var(--line);
+  background:var(--panel);color:var(--muted)}
+.badge.live{color:#06110b;background:var(--accent2);border-color:var(--accent2);font-weight:700}
+.badge.mock{color:#1a1204;background:var(--warn);border-color:var(--warn);font-weight:700}
+
+main{max-width:1180px;margin:24px auto;padding:0 24px;display:flex;flex-direction:column;gap:18px}
+.card{background:var(--panel);border:1px solid var(--line);border-radius:var(--radius);
+  padding:18px 20px;box-shadow:0 6px 24px rgba(0,0,0,.25)}
+.controls .row{display:flex;gap:16px;flex-wrap:wrap}
+.controls .row.advanced{margin-top:14px;align-items:flex-end}
+label{display:flex;flex-direction:column;gap:6px;font-size:12.5px;color:var(--muted);flex:1;min-width:160px}
+label.chk{flex-direction:row;align-items:center;gap:8px;color:var(--text);min-width:auto}
+input,select{background:var(--panel2);border:1px solid var(--line);color:var(--text);
+  padding:10px 12px;border-radius:9px;font-size:14px;font-family:var(--sans)}
+input:focus,select:focus{outline:none;border-color:var(--accent)}
+input[type=checkbox]{width:16px;height:16px}
+button{background:linear-gradient(180deg,var(--accent),#2f7fe0);color:#04122b;border:none;
+  font-weight:700;padding:11px 22px;border-radius:9px;cursor:pointer;font-size:14px;white-space:nowrap}
+button:hover{filter:brightness(1.08)}
+button:disabled{opacity:.5;cursor:progress}
+.hint{margin-top:10px;font-size:12.5px;color:var(--muted)}
+.hint b{color:var(--accent)}
+
+.headline{display:flex;gap:32px;align-items:center;flex-wrap:wrap}
+.prob-block{min-width:260px}
+.prob-label{font-size:12px;text-transform:uppercase;letter-spacing:.12em;color:var(--muted)}
+.prob-value{font-family:var(--serif);font-size:64px;line-height:1;margin:6px 0;
+  background:linear-gradient(90deg,var(--accent),var(--accent2));-webkit-background-clip:text;
+  background-clip:text;-webkit-text-fill-color:transparent}
+.prob-cond{color:var(--text);font-size:15px}
+.odds{color:var(--muted);font-size:13px;margin-top:4px}
+.meta-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:12px 26px;flex:1;min-width:320px}
+.meta-grid span{display:block;font-size:11px;text-transform:uppercase;letter-spacing:.08em;color:var(--muted)}
+.meta-grid b{font-size:16px}
+
+.grid2{display:grid;grid-template-columns:1fr 1fr;gap:18px}
+@media(max-width:900px){.grid2{grid-template-columns:1fr}.meta-grid{grid-template-columns:repeat(2,1fr)}}
+h3{font-family:var(--serif);font-size:16px;margin:0 0 10px}
+table.stats{width:100%;border-collapse:collapse;font-size:13.5px}
+table.stats td{padding:6px 8px;border-bottom:1px solid var(--line)}
+table.stats td:first-child{color:var(--muted)}
+table.stats td:last-child{text-align:right;font-variant-numeric:tabular-nums}
+.hidden{display:none}
+.err{border-color:var(--neg);color:#ffd9d9}
+footer{max-width:1180px;margin:10px auto 40px;padding:0 24px;color:var(--muted);font-size:11.5px}
