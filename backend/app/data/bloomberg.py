@@ -348,33 +348,59 @@ class BloombergProvider:
 
         # Flatten (possibly MultiIndex / tuple) column labels to lowercase strings.
         flat = _flat_columns(df)
-        pick = None
-        for i, label in enumerate(flat):
-            if "security" in label or "description" in label or label.endswith("ticker"):
-                pick = i
-                break
-        # Candidate columns to search for the actual option member tickers.
-        candidate_idxs = [pick] if pick is not None else list(range(df.shape[1]))
         parent = str(ticker).strip().lower()
-        best: list[str] = []
-        for idx in candidate_idxs:
+
+        def _clean(idx):
             vals = [str(v).strip() for v in df.iloc[:, idx].tolist()
                     if v is not None and str(v).strip()]
-            # Skip a column that is just the parent ticker repeated (index
-            # leakage after narwhals->pandas coercion) or plain numbers.
-            non_parent = [v for v in vals if v.lower() != parent]
-            looks_like_ticker = [v for v in non_parent
-                                 if any(c.isalpha() for c in v) and len(v) > 3]
-            if len(looks_like_ticker) > len(best):
-                best = looks_like_ticker
-            if pick is not None:
-                # We trusted the labelled column; keep its non-parent values.
-                best = non_parent or looks_like_ticker
+            # Drop the parent ticker (index leakage / self-reference).
+            return [v for v in vals if v.lower() != parent]
+
+        def _optionlike(vals):
+            # A real member ticker has letters, some length, and is not just a
+            # number or a bare field label.
+            return [v for v in vals
+                    if any(c.isalpha() for c in v) and len(v) > 3
+                    and v.lower() not in ("opt_chain", "field", "ticker",
+                                          "security description")]
+
+        # 1) Prefer an explicitly named member/description column, in priority
+        #    order. Note 'security description' holds the actual members; a bare
+        #    'ticker' column here is usually the *parent* repeated, so it is LAST.
+        preferred = ["security description", "security_description",
+                     "description", "security", "member", "members",
+                     "option", "ticker"]
+        ordered_idxs: list[int] = []
+        for name in preferred:
+            for i, label in enumerate(flat):
+                if label == name and i not in ordered_idxs:
+                    ordered_idxs.append(i)
+        # 2) Then any remaining columns, so we still find members if labels differ.
+        ordered_idxs += [i for i in range(df.shape[1]) if i not in ordered_idxs]
+
+        best: list[str] = []
+        for idx in ordered_idxs:
+            members = _optionlike(_clean(idx))
+            if len(members) > len(best):
+                best = members
+            # A labelled description/security column that yields any members is
+            # authoritative -- stop early.
+            if flat[idx] in ("security description", "security_description",
+                             "description", "security") and members:
+                best = members
                 break
+
         if not best:
+            # Surface a rich preview so we can see the real cell contents.
+            preview = {}
+            try:
+                for i, label in enumerate(flat[:6]):
+                    preview[label] = [str(v) for v in df.iloc[:, i].tolist()[:4]]
+            except Exception:
+                pass
             raise ValueError(
                 f"OPT_CHAIN for {ticker!r} returned rows but no member tickers "
-                f"could be parsed (columns={flat})")
+                f"could be parsed (columns={flat}, preview={preview})")
         return best
 
     # ---- per-option implied vol + price (BDP, bulk) ------------------------
