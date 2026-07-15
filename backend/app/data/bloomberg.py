@@ -121,6 +121,54 @@ def act365(as_of: dt.date, expiry: dt.date) -> float:
 # and never calls .lower() on a tuple column label (the source of the
 # "'DataFrame' object has no attribute 'iloc'" style breakages).
 # ----------------------------------------------------------------------------
+def _to_pandas(obj):
+    """Coerce whatever xbbg returns into a native pandas object.
+
+    Some environments have xbbg (or its deps) return a **narwhals** wrapper
+    (`narwhals.stable.v1.DataFrame`) or a polars frame rather than a pandas
+    DataFrame. Those look similar (they have .shape) but lack .empty / pandas
+    .iloc semantics, which breaks downstream parsing. We unwrap to real pandas
+    once, at the boundary, so nothing else has to care.
+    """
+    if obj is None:
+        return None
+    try:
+        import pandas as pd
+    except Exception:
+        return obj
+    # Already native pandas?
+    if isinstance(obj, (pd.DataFrame, pd.Series)):
+        return obj
+    # narwhals: has .to_native() that returns the underlying frame
+    to_native = getattr(obj, "to_native", None)
+    if callable(to_native):
+        try:
+            obj = to_native()
+            if isinstance(obj, (pd.DataFrame, pd.Series)):
+                return obj
+        except Exception:
+            pass
+    # narwhals also exposes .to_pandas() in some versions
+    to_pandas = getattr(obj, "to_pandas", None)
+    if callable(to_pandas):
+        try:
+            return to_pandas()
+        except Exception:
+            pass
+    # polars frame
+    mod = type(obj).__module__ or ""
+    if mod.startswith("polars"):
+        try:
+            return obj.to_pandas()
+        except Exception:
+            pass
+    # last resort: try constructing a DataFrame from it
+    try:
+        return pd.DataFrame(obj)
+    except Exception:
+        return obj
+
+
 def _flat_columns(df) -> list[str]:
     """Return column labels as lowercase strings, joining MultiIndex tuples."""
     out = []
@@ -220,7 +268,7 @@ class BloombergProvider:
         rather than assuming an (0, 0) position.
         """
         blp = self._xbbg
-        df = blp.bdp(tickers=ticker, flds=["PX_LAST"])
+        df = _to_pandas(blp.bdp(tickers=ticker, flds=["PX_LAST"]))
         val = _first_scalar(df)
         if val is None:
             raise ValueError(f"No PX_LAST returned for {ticker!r} (check the ticker / entitlements)")
@@ -237,7 +285,7 @@ class BloombergProvider:
         column, and finally fall back to the first column by position.
         """
         blp = self._xbbg
-        df = blp.bds(tickers=ticker, flds="OPT_CHAIN")
+        df = _to_pandas(blp.bds(tickers=ticker, flds="OPT_CHAIN"))
         if df is None or getattr(df, "empty", True):
             raise ValueError(f"OPT_CHAIN returned no members for {ticker!r}")
 
@@ -260,7 +308,7 @@ class BloombergProvider:
         flds = ["PX_BID", "PX_ASK", "PX_LAST", "IVOL_MID",
                 "OPT_STRIKE_PX", "OPT_EXPIRE_DT", "OPT_PUT_CALL",
                 "OPEN_INT", "PX_VOLUME", "OPT_UNDL_PX"]
-        df = blp.bdp(tickers=tickers, flds=flds)
+        df = _to_pandas(blp.bdp(tickers=tickers, flds=flds))
         return _flatten_bdp(df)
 
     # ---- historical vol (BDH) ----------------------------------------------
