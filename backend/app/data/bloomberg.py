@@ -180,8 +180,38 @@ def _flat_columns(df) -> list[str]:
     return out
 
 
+def _coerce_float(v):
+    """Return v as a float if it is numeric (or a numeric-looking string),
+    else None. Ticker labels like 'SPX Index' return None."""
+    if v is None or (isinstance(v, float) and v != v):  # None / NaN
+        return None
+    if isinstance(v, (int, float)):
+        return float(v)
+    # numpy scalar
+    try:
+        import numpy as np
+        if isinstance(v, np.generic):
+            f = float(v)
+            return f if f == f else None
+    except Exception:
+        pass
+    # numeric-looking string (but NOT a ticker like 'SPX Index')
+    if isinstance(v, str):
+        s = v.strip().replace(",", "")
+        try:
+            return float(s)
+        except (ValueError, TypeError):
+            return None
+    return None
+
+
 def _first_scalar(df):
-    """Extract the first non-null scalar from a bdp result (frame or series)."""
+    """Extract the first non-null **numeric** scalar from a bdp result.
+
+    After narwhals->pandas coercion the ticker (formerly the row index) can
+    appear as a data cell, so we must skip non-numeric values (e.g. the string
+    'SPX Index') and return the first genuine number.
+    """
     try:
         import pandas as pd
     except Exception:
@@ -190,16 +220,31 @@ def _first_scalar(df):
         return None
     # Series
     if pd is not None and isinstance(df, pd.Series):
-        s = df.dropna()
-        return s.iloc[0] if len(s) else None
+        for v in df.tolist():
+            f = _coerce_float(v)
+            if f is not None:
+                return f
+        return None
     # DataFrame
     if hasattr(df, "empty"):
         if df.empty:
             return None
-        vals = df.to_numpy().ravel()
-        for v in vals:
-            if v is not None and (v == v):  # not NaN
-                return v
+        # Prefer a PX_LAST-like column if present, else scan all cells.
+        try:
+            cols = _flat_columns(df)
+            for want in ("px_last", "last_price", "px_mid", "px_bid"):
+                if want in cols:
+                    col = df.iloc[:, cols.index(want)]
+                    for v in col.tolist():
+                        f = _coerce_float(v)
+                        if f is not None:
+                            return f
+        except Exception:
+            pass
+        for v in df.to_numpy().ravel():
+            f = _coerce_float(v)
+            if f is not None:
+                return f
         return None
     return None
 
@@ -216,6 +261,18 @@ def _flatten_bdp(df):
         return pd.DataFrame()
     if isinstance(df, pd.Series):
         df = df.to_frame().T
+    # If narwhals->pandas coercion reset the ticker index into a column, put it
+    # back as the row index so downstream lookups by ticker keep working.
+    if not isinstance(df.columns, pd.MultiIndex):
+        lc = [str(c).lower() for c in df.columns]
+        for cand in ("ticker", "tickers", "security", "index", "level_0"):
+            if cand in lc:
+                col = df.columns[lc.index(cand)]
+                try:
+                    df = df.set_index(col)
+                except Exception:
+                    pass
+                break
     if isinstance(df.columns, pd.MultiIndex):
         # Collapse (ticker, field) -> field, keeping ticker on the row index.
         # xbbg already indexes rows by ticker for bdp, so just take the last
@@ -296,8 +353,29 @@ class BloombergProvider:
             if "security" in label or "description" in label or label.endswith("ticker"):
                 pick = i
                 break
-        series = df.iloc[:, pick] if pick is not None else df.iloc[:, 0]
-        return [str(v) for v in series.tolist() if v is not None and str(v).strip()]
+        # Candidate columns to search for the actual option member tickers.
+        candidate_idxs = [pick] if pick is not None else list(range(df.shape[1]))
+        parent = str(ticker).strip().lower()
+        best: list[str] = []
+        for idx in candidate_idxs:
+            vals = [str(v).strip() for v in df.iloc[:, idx].tolist()
+                    if v is not None and str(v).strip()]
+            # Skip a column that is just the parent ticker repeated (index
+            # leakage after narwhals->pandas coercion) or plain numbers.
+            non_parent = [v for v in vals if v.lower() != parent]
+            looks_like_ticker = [v for v in non_parent
+                                 if any(c.isalpha() for c in v) and len(v) > 3]
+            if len(looks_like_ticker) > len(best):
+                best = looks_like_ticker
+            if pick is not None:
+                # We trusted the labelled column; keep its non-parent values.
+                best = non_parent or looks_like_ticker
+                break
+        if not best:
+            raise ValueError(
+                f"OPT_CHAIN for {ticker!r} returned rows but no member tickers "
+                f"could be parsed (columns={flat})")
+        return best
 
     # ---- per-option implied vol + price (BDP, bulk) ------------------------
     def option_fields(self, tickers: list[str]):
