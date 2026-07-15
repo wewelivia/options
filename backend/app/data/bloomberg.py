@@ -273,6 +273,35 @@ def _flatten_bdp(df):
                 except Exception:
                     pass
                 break
+    # LONG -> WIDE: some xbbg/narwhals stacks return a melted frame with just
+    # ('field','value') columns and the ticker on the row index -- i.e. one row
+    # per (ticker, field). Pivot it so each field becomes its own column,
+    # indexed by ticker, which is what the chain builder expects.
+    lc_now = [str(c).lower() for c in df.columns]
+    if not isinstance(df.columns, pd.MultiIndex) and set(lc_now) >= {"field", "value"} \
+            and len(df.columns) <= 3:
+        try:
+            fcol = df.columns[lc_now.index("field")]
+            vcol = df.columns[lc_now.index("value")]
+            tmp = df[[fcol, vcol]].copy()
+            tmp["__tk__"] = df.index
+            tmp[fcol] = tmp[fcol].astype(str).str.lower()
+            wide = tmp.pivot_table(index="__tk__", columns=fcol, values=vcol,
+                                   aggfunc="first")
+            wide.index.name = None
+            wide.columns = [str(c).lower() for c in wide.columns]
+            # Coerce numeric-looking strings to floats where possible (per
+            # column; leave genuinely non-numeric fields like opt_put_call as-is).
+            for c in wide.columns:
+                converted = pd.to_numeric(wide[c], errors="coerce")
+                # Keep the numeric version only if it didn't wipe real data
+                # (i.e. the column was mostly numeric to begin with).
+                orig_nonnull = wide[c].notna().sum()
+                if orig_nonnull == 0 or converted.notna().sum() >= 0.5 * orig_nonnull:
+                    wide[c] = converted
+            return wide
+        except Exception:
+            pass
     if isinstance(df.columns, pd.MultiIndex):
         # Collapse (ticker, field) -> field, keeping ticker on the row index.
         # xbbg already indexes rows by ticker for bdp, so just take the last
