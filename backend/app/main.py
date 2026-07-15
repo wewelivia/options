@@ -68,8 +68,30 @@ def presets():
 @app.get("/api/diagnose")
 def diagnose(underlying: str = Query(...)):
     """Step-by-step probe of the live Bloomberg path so we can see exactly which
-    xbbg call fails and what it returns. Safe to call anytime; never raises."""
-    return service.diagnose(underlying)
+    xbbg call fails and what it returns. Safe to call anytime; never raises --
+    even a bug in the diagnostic itself is returned as JSON, not a 500."""
+    import json, math
+
+    def _scrub(o):
+        """Recursively replace NaN/Inf (not JSON-compliant under starlette's
+        strict encoder) with None, and stringify anything exotic."""
+        if isinstance(o, float):
+            return None if (math.isnan(o) or math.isinf(o)) else o
+        if isinstance(o, dict):
+            return {str(k): _scrub(v) for k, v in o.items()}
+        if isinstance(o, (list, tuple)):
+            return [_scrub(v) for v in o]
+        if isinstance(o, (str, int, bool)) or o is None:
+            return o
+        return str(o)
+
+    try:
+        report = service.diagnose(underlying)
+        return _scrub(report)
+    except Exception as e:
+        return {"diagnose_crashed": True,
+                "error": f"{type(e).__name__}: {e}",
+                "traceback": traceback.format_exc().splitlines()[-12:]}
 
 
 @app.get("/api/chain", response_model=ChainResponse)
