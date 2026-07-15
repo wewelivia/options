@@ -35,18 +35,29 @@ def _get_chain(underlying: str, prefer_live: bool = True):
     return chain
 
 
-def _shape(obj) -> str:
+def _shape(obj) -> dict | str:
+    """Rich description of an xbbg return: shape, column labels (including
+    MultiIndex tuples), row index, and a small preview of the actual cells so
+    we can tell an empty frame from an oddly-shaped one."""
     try:
         import pandas as pd
         if isinstance(obj, pd.DataFrame):
-            cols = list(obj.columns)[:6]
-            return (f"DataFrame shape={obj.shape} "
-                    f"cols_type={type(obj.columns).__name__} "
-                    f"cols_sample={cols}")
+            return {
+                "type": "DataFrame",
+                "shape": list(obj.shape),
+                "empty": bool(obj.empty),
+                "columns_type": type(obj.columns).__name__,
+                "columns": [list(c) if isinstance(c, tuple) else c
+                            for c in list(obj.columns)[:12]],
+                "index": [str(i) for i in list(obj.index)[:6]],
+                "preview": obj.head(3).to_dict(orient="list") if not obj.empty else {},
+            }
         if isinstance(obj, pd.Series):
-            return f"Series len={len(obj)} index_sample={list(obj.index)[:6]}"
-    except Exception:
-        pass
+            return {"type": "Series", "len": len(obj),
+                    "index": [str(i) for i in list(obj.index)[:12]],
+                    "preview": obj.head(6).tolist()}
+    except Exception as e:
+        return f"{type(obj).__name__} (shape-introspection error: {e})"
     return f"{type(obj).__name__}"
 
 
@@ -111,12 +122,74 @@ def diagnose(underlying: str) -> dict:
         return {"count": len(m), "sample": m[:5]}
     members_res = probe("chain_members", _members)
 
-    # 5) option fields for a small sample
+    # 5) option fields for a small sample -- show actual values so we can see
+    #    whether IV / strike / expiry are populated (the usual cause of
+    #    "no expiries available").
     def _fields():
-        m = prov.chain_tickers(underlying)[:20]
+        m = prov.chain_tickers(underlying)[:25]
         df = prov.option_fields(m)
-        return {"shape": _shape(df), "columns": list(getattr(df, "columns", []))[:12]}
+        cols = list(getattr(df, "columns", []))
+        # populated-count per column
+        populated = {}
+        try:
+            for c in cols:
+                nonnull = int(df[c].notna().sum())
+                populated[str(c)] = nonnull
+        except Exception:
+            pass
+        # first few full rows (ticker + all fields)
+        rows = []
+        try:
+            for tk, row in df.head(5).iterrows():
+                rows.append({"ticker": str(tk),
+                             **{str(c): str(row[c]) for c in cols}})
+        except Exception as e:
+            rows = [f"row-dump error: {e}"]
+        return {"sample_tickers_queried": m[:5],
+                "shape": _shape(df),
+                "columns": [str(c) for c in cols],
+                "populated_per_column": populated,
+                "sample_rows": rows}
     probe("option_fields_sample", _fields)
+
+    # 5b) expiry grouping breakdown: how many strikes land on each expiry
+    def _expiry_breakdown():
+        from ..data.chain_builder import _build_live, _to_date
+        m = prov.chain_tickers(underlying)
+        df = prov.option_fields(m[:400])  # bounded sample
+        cols = {str(c).lower(): c for c in df.columns}
+        def col(name, *alts):
+            for n in (name, *alts):
+                if n.lower() in cols:
+                    return cols[n.lower()]
+            return None
+        c_iv = col("ivol_mid", "ivol")
+        c_k = col("opt_strike_px", "strike")
+        c_exp = col("opt_expire_dt", "expiry")
+        counts = {}
+        iv_ok = k_ok = exp_ok = 0
+        for _, row in df.iterrows():
+            try:
+                iv = row[c_iv] if c_iv else None
+                k = row[c_k] if c_k else None
+                e = _to_date(row[c_exp]) if c_exp else None
+                if iv is not None and str(iv).strip() not in ("", "nan", "None"):
+                    iv_ok += 1
+                if k is not None and str(k).strip() not in ("", "nan", "None"):
+                    k_ok += 1
+                if e is not None:
+                    exp_ok += 1
+                    counts[e.isoformat()] = counts.get(e.isoformat(), 0) + 1
+            except Exception:
+                continue
+        top = dict(sorted(counts.items(), key=lambda x: -x[1])[:10])
+        return {"resolved_cols": {"iv": str(c_iv), "strike": str(c_k), "expiry": str(c_exp)},
+                "rows_scanned": int(min(len(m), 400)),
+                "iv_populated": iv_ok, "strike_populated": k_ok,
+                "expiry_parsed": exp_ok,
+                "strikes_per_expiry_top10": top,
+                "expiries_with_5plus": sum(1 for v in counts.values() if v >= 5)}
+    probe("expiry_breakdown", _expiry_breakdown)
 
     # 6) full build
     def _build():
