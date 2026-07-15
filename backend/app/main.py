@@ -13,7 +13,9 @@ Run:  uvicorn app.main:app --reload --port 8000   (from backend/)
 """
 from __future__ import annotations
 
+import logging
 import os
+import traceback
 
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
@@ -23,6 +25,10 @@ from fastapi.staticfiles import StaticFiles
 from .models.schemas import ProbabilityRequest, ChainResponse, DistributionResponse
 from .core import service
 from .data.bloomberg import MockProvider, get_provider
+
+logging.basicConfig(level=logging.INFO,
+                    format="%(asctime)s %(levelname)s %(name)s: %(message)s")
+log = logging.getLogger("rnd")
 
 app = FastAPI(title="Option-Implied Probability Dashboard", version="1.0.0")
 
@@ -59,11 +65,21 @@ def presets():
     return {"groups": groups, "example_conditions": examples}
 
 
+@app.get("/api/diagnose")
+def diagnose(underlying: str = Query(...)):
+    """Step-by-step probe of the live Bloomberg path so we can see exactly which
+    xbbg call fails and what it returns. Safe to call anytime; never raises."""
+    return service.diagnose(underlying)
+
+
 @app.get("/api/chain", response_model=ChainResponse)
 def chain(underlying: str = Query(...), prefer_live: bool = True):
     try:
         return service.get_chain_info(underlying, prefer_live=prefer_live)
     except Exception as e:
+        # Log the full traceback to the server console so the real xbbg error
+        # is visible, and return a useful message to the UI.
+        log.error("Chain build failed for %r:\n%s", underlying, traceback.format_exc())
         raise HTTPException(status_code=400, detail=f"Chain error: {e}")
 
 
@@ -79,8 +95,11 @@ def distribution(req: ProbabilityRequest):
             expiry=req.expiry,
         )
     except ValueError as e:
+        log.warning("Distribution 422 for %r / %r: %s", req.underlying, req.condition, e)
         raise HTTPException(status_code=422, detail=str(e))
     except Exception as e:
+        log.error("Distribution failed for %r / %r:\n%s",
+                  req.underlying, req.condition, traceback.format_exc())
         raise HTTPException(status_code=500, detail=f"Computation failed: {e}")
 
 
