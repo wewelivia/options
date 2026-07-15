@@ -110,6 +110,77 @@ def act365(as_of: dt.date, expiry: dt.date) -> float:
 
 
 # ----------------------------------------------------------------------------
+# xbbg return-shape helpers
+#
+# xbbg's bdp/bds do not have a single stable output shape across versions:
+#  - columns may be a flat Index of field names, OR a MultiIndex of
+#    (ticker, field) tuples;
+#  - a single-ticker bdp may come back as a 1xN frame or, occasionally, a
+#    Series; and a missing field yields an empty frame.
+# These helpers normalise all of that so the provider never assumes a shape
+# and never calls .lower() on a tuple column label (the source of the
+# "'DataFrame' object has no attribute 'iloc'" style breakages).
+# ----------------------------------------------------------------------------
+def _flat_columns(df) -> list[str]:
+    """Return column labels as lowercase strings, joining MultiIndex tuples."""
+    out = []
+    for c in df.columns:
+        if isinstance(c, tuple):
+            out.append("|".join(str(x) for x in c).lower())
+        else:
+            out.append(str(c).lower())
+    return out
+
+
+def _first_scalar(df):
+    """Extract the first non-null scalar from a bdp result (frame or series)."""
+    try:
+        import pandas as pd
+    except Exception:
+        pd = None
+    if df is None:
+        return None
+    # Series
+    if pd is not None and isinstance(df, pd.Series):
+        s = df.dropna()
+        return s.iloc[0] if len(s) else None
+    # DataFrame
+    if hasattr(df, "empty"):
+        if df.empty:
+            return None
+        vals = df.to_numpy().ravel()
+        for v in vals:
+            if v is not None and (v == v):  # not NaN
+                return v
+        return None
+    return None
+
+
+def _flatten_bdp(df):
+    """Return a bdp frame with flat, lowercase field-name columns indexed by
+    ticker. Handles both flat and (ticker, field) MultiIndex column layouts,
+    and a single-row Series."""
+    try:
+        import pandas as pd
+    except Exception:
+        return df
+    if df is None:
+        return pd.DataFrame()
+    if isinstance(df, pd.Series):
+        df = df.to_frame().T
+    if isinstance(df.columns, pd.MultiIndex):
+        # Collapse (ticker, field) -> field, keeping ticker on the row index.
+        # xbbg already indexes rows by ticker for bdp, so just take the last
+        # level (the field name) as the column label.
+        df = df.copy()
+        df.columns = [str(c[-1]).lower() for c in df.columns]
+    else:
+        df = df.copy()
+        df.columns = [str(c).lower() for c in df.columns]
+    return df
+
+
+# ----------------------------------------------------------------------------
 # xbbg / blpapi provider
 # ----------------------------------------------------------------------------
 class BloombergProvider:
@@ -141,30 +212,56 @@ class BloombergProvider:
 
     # ---- reference / spot (BDP) --------------------------------------------
     def spot(self, ticker: str) -> float:
+        """Last price via BDP.
+
+        xbbg's bdp() returns a DataFrame indexed by ticker with (lowercased)
+        field columns, but the exact shape varies by version and can be empty
+        if the field is unavailable. Extract the single scalar defensively
+        rather than assuming an (0, 0) position.
+        """
         blp = self._xbbg
         df = blp.bdp(tickers=ticker, flds=["PX_LAST"])
-        return float(df.iloc[0, 0])
+        val = _first_scalar(df)
+        if val is None:
+            raise ValueError(f"No PX_LAST returned for {ticker!r} (check the ticker / entitlements)")
+        return float(val)
 
     # ---- chain members (BDS) -----------------------------------------------
     def chain_tickers(self, ticker: str, call_put: str = "C") -> list[str]:
         """Pull option chain member tickers via BDS on OPT_CHAIN.
 
-        Bloomberg field: 'OPT_CHAIN' returns a table with 'Security Description'.
-        Some underlyings need CHAIN_PUT_CALL_TYPE_OVRD / CHAIN_EXP_DT_OVRD overrides.
+        Bloomberg field 'OPT_CHAIN' returns a bulk table. xbbg represents this
+        as a DataFrame whose columns may be a flat Index OR a MultiIndex
+        (ticker, field) -- so column labels can be tuples, not strings. We
+        flatten the columns to strings first, then pick the security-description
+        column, and finally fall back to the first column by position.
         """
         blp = self._xbbg
         df = blp.bds(tickers=ticker, flds="OPT_CHAIN")
-        col = [c for c in df.columns if "security" in c.lower() or "description" in c.lower()]
-        vals = df[col[0]] if col else df.iloc[:, 0]
-        return [str(v) for v in vals.tolist()]
+        if df is None or getattr(df, "empty", True):
+            raise ValueError(f"OPT_CHAIN returned no members for {ticker!r}")
+
+        # Flatten (possibly MultiIndex / tuple) column labels to lowercase strings.
+        flat = _flat_columns(df)
+        pick = None
+        for i, label in enumerate(flat):
+            if "security" in label or "description" in label or label.endswith("ticker"):
+                pick = i
+                break
+        series = df.iloc[:, pick] if pick is not None else df.iloc[:, 0]
+        return [str(v) for v in series.tolist() if v is not None and str(v).strip()]
 
     # ---- per-option implied vol + price (BDP, bulk) ------------------------
-    def option_fields(self, tickers: list[str]) -> "object":
+    def option_fields(self, tickers: list[str]):
+        """Bulk BDP for the option fields, returned as a *flat-column* frame
+        indexed by ticker so chain_builder can address columns by lowercase
+        field name regardless of xbbg's MultiIndex convention."""
         blp = self._xbbg
         flds = ["PX_BID", "PX_ASK", "PX_LAST", "IVOL_MID",
                 "OPT_STRIKE_PX", "OPT_EXPIRE_DT", "OPT_PUT_CALL",
                 "OPEN_INT", "PX_VOLUME", "OPT_UNDL_PX"]
-        return blp.bdp(tickers=tickers, flds=flds)
+        df = blp.bdp(tickers=tickers, flds=flds)
+        return _flatten_bdp(df)
 
     # ---- historical vol (BDH) ----------------------------------------------
     def hist_vol(self, ticker: str, start: dt.date, end: dt.date, fld: str = "3MO_IMPVOL_100.0%MNY_DF"):
