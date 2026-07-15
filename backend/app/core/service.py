@@ -10,8 +10,9 @@ from functools import lru_cache
 
 import numpy as np
 
-from ..data.bloomberg import ASSET_DEFAULTS, MockProvider, get_provider
-from ..data.chain_builder import build_chain
+from ..data.bloomberg import (ASSET_DEFAULTS, BloombergProvider, MockProvider,
+                              get_provider)
+from ..data.chain_builder import build_chain, classify_asset
 from .sabr import calibrate_sabr
 from .breeden_litzenberger import extract_rnd
 from .event_parser import parse_condition, compute_probability
@@ -32,6 +33,102 @@ def _get_chain(underlying: str, prefer_live: bool = True):
     chain = build_chain(provider, underlying)
     _CHAIN_CACHE[underlying] = (now, chain)
     return chain
+
+
+def _shape(obj) -> str:
+    try:
+        import pandas as pd
+        if isinstance(obj, pd.DataFrame):
+            cols = list(obj.columns)[:6]
+            return (f"DataFrame shape={obj.shape} "
+                    f"cols_type={type(obj.columns).__name__} "
+                    f"cols_sample={cols}")
+        if isinstance(obj, pd.Series):
+            return f"Series len={len(obj)} index_sample={list(obj.index)[:6]}"
+    except Exception:
+        pass
+    return f"{type(obj).__name__}"
+
+
+def diagnose(underlying: str) -> dict:
+    """Probe the live Bloomberg path one call at a time, capturing the raw
+    return shape and any error per step. Never raises -- returns a report the
+    UI/terminal can show so we can pinpoint exactly where a chain build fails.
+    """
+    report: dict = {"underlying": underlying,
+                    "classified_as": classify_asset(underlying),
+                    "steps": []}
+
+    prov = get_provider(prefer_live=True)
+    is_live = isinstance(prov, BloombergProvider)
+    report["provider"] = "bloomberg" if is_live else "mock"
+    if not is_live:
+        report["note"] = ("No live Terminal detected (xbbg/blpapi not importable or "
+                          "not connected). The app is using synthetic surfaces.")
+        # Still show the mock builds cleanly.
+        try:
+            chain = build_chain(prov, underlying)
+            report["steps"].append({"step": "mock_build", "ok": True,
+                                    "expiries": len(chain.expiries),
+                                    "asset_class": chain.asset_class})
+        except Exception as e:
+            report["steps"].append({"step": "mock_build", "ok": False, "error": repr(e)})
+        return report
+
+    # ---- live probes ----
+    def probe(name, fn):
+        import traceback as _tb
+        entry = {"step": name}
+        try:
+            out = fn()
+            entry["ok"] = True
+            entry["result"] = out
+        except Exception as e:
+            entry["ok"] = False
+            entry["error"] = f"{type(e).__name__}: {e}"
+            entry["traceback"] = _tb.format_exc().splitlines()[-4:]
+        report["steps"].append(entry)
+        return entry.get("result")
+
+    # 1) raw spot frame shape
+    def _raw_spot():
+        df = prov._xbbg.bdp(tickers=underlying, flds=["PX_LAST"])
+        return _shape(df)
+    probe("bdp_px_last_shape", _raw_spot)
+
+    # 2) parsed spot
+    spot = probe("spot_value", lambda: prov.spot(underlying))
+
+    # 3) raw OPT_CHAIN shape
+    def _raw_chain():
+        df = prov._xbbg.bds(tickers=underlying, flds="OPT_CHAIN")
+        return _shape(df)
+    probe("bds_opt_chain_shape", _raw_chain)
+
+    # 4) parsed chain members (count + sample)
+    def _members():
+        m = prov.chain_tickers(underlying)
+        return {"count": len(m), "sample": m[:5]}
+    members_res = probe("chain_members", _members)
+
+    # 5) option fields for a small sample
+    def _fields():
+        m = prov.chain_tickers(underlying)[:20]
+        df = prov.option_fields(m)
+        return {"shape": _shape(df), "columns": list(getattr(df, "columns", []))[:12]}
+    probe("option_fields_sample", _fields)
+
+    # 6) full build
+    def _build():
+        chain = build_chain(prov, underlying)
+        return {"expiries": len(chain.expiries),
+                "asset_class": chain.asset_class,
+                "first_expiry": chain.expiries[0].expiry.isoformat() if chain.expiries else None,
+                "n_strikes_first": (len({q.strike for q in chain.expiries[0].quotes})
+                                    if chain.expiries else 0)}
+    probe("full_build_chain", _build)
+
+    return report
 
 
 def get_chain_info(underlying: str, prefer_live: bool = True) -> dict:
